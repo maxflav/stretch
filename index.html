@@ -1,0 +1,458 @@
+<body>
+<canvas id="canvas" width="800" height="500" style="border:0px solid gray;"></canvas>
+<script>
+  document.levels = [];
+</script>
+<script src="level1.js"></script>
+<script>
+  canvas = document.getElementById('canvas');
+  context = canvas.getContext('2d');
+
+  FPS = 15;
+  PXL_SIZE = 20;
+  WIDTH = canvas.width / PXL_SIZE;
+  HEIGHT = canvas.height / PXL_SIZE;
+
+  STARTING_MAXLEN = 1;
+
+  EMPTY    = 0;
+  PLAYER   = 1;
+  WALL     = 2;
+  PILL     = 3;
+  CLOUD    = 4;
+  // BAD_LO is slippery but safe
+  // BAD_HI is bad on all sides
+  BAD_LO   = 16;
+  BAD_HI   = 31;
+
+  BAD_TOP    = 1;
+  BAD_RIGHT  = 2;
+  BAD_BOTTOM = 4;
+  BAD_LEFT   = 8;
+
+  BG_COLORS = [
+    '#303030',
+    '#343434'
+  ];
+  GRAY   = '#666666';
+  GREEN  = '#0DA554';
+  ORANGE = '#E98813';
+  RED    = '#972706';
+  BLUE   = '#469CC9';
+  WHITE  = '#C8C8C8';
+  BLACK  = '#000000';
+
+  KEY_SPACE = 32;
+  KEY_LEFT  = 37;
+  KEY_UP    = 38;
+  KEY_RIGHT = 39;
+  KEY_DOWN  = 40;
+  KEY_R     = 82;
+
+  KEY_LIST = {};
+  KEY_LIST[KEY_LEFT]=1;
+  KEY_LIST[KEY_UP]=1;
+  KEY_LIST[KEY_RIGHT]=1;
+  KEY_LIST[KEY_DOWN]=1;
+  KEY_LIST[KEY_SPACE]=1;
+  KEY_LIST[KEY_R]=1;
+
+  keys_held = {};
+  background_img = null;
+  map = [];
+  head = {}
+  body = [];
+  len = 0;
+  max_len = 0;
+  attached_to = null;
+  dead = false;
+  current_level = 0;
+  
+  KEYS_UP          = 0;
+  KEYS_DOWN        = 1;
+  KEYS_TAPPED      = 2;
+  KEYS_HELDSHORT   = 3;
+  KEYS_HELD        = 4;
+
+  function key_up(s) {
+    switch(s) {
+      case KEYS_DOWN:      return KEYS_TAPPED;
+      case KEYS_UP:        return KEYS_UP;
+      case KEYS_HELD:      return KEYS_UP;
+      case KEYS_HELDSHORT: return KEYS_UP;
+      case KEYS_TAPPED:    return KEYS_UP;
+    }
+  }
+  function key_clear(s) {
+    switch(s) {
+      case KEYS_DOWN:      return KEYS_HELDSHORT;
+      case KEYS_UP:        return KEYS_UP;
+      case KEYS_HELD:      return KEYS_HELD;
+      case KEYS_HELDSHORT: return KEYS_HELD;
+      case KEYS_TAPPED:    return KEYS_UP;
+    }
+  }
+  document.onkeydown = function(e) { keys_held[e.keyCode] = KEYS_DOWN; return !(KEY_LIST[e.keyCode]); }
+  document.onkeyup   = function(e) { keys_held[e.keyCode] = key_up(keys_held[e.keyCode]); return !(KEY_LIST[e.keyCode]); }
+  function clearKeys() { for (var k in keys_held) keys_held[k] = key_clear(keys_held[k]); }
+
+  function is_key_down(k) {
+    return keys_held[k] == KEYS_DOWN 
+        || keys_held[k] == KEYS_HELD
+        || keys_held[k] == KEYS_TAPPED;
+  }
+
+  function start_game() {
+    draw_background();
+    start_level();
+    loop();
+  }
+
+  function start_level() {
+    map = [];
+    for (var x = 0; x < WIDTH; x++) {
+      map[x] = [];
+      for (var y = 0; y < HEIGHT; y++) {
+        map[x][y] = EMPTY;
+      }
+    }
+    
+    document.levels[current_level]();
+
+    dead = false;
+    len = 0;
+    collapse_to(head);
+  }
+
+  function draw_background() {
+    canvas.width += 0;
+
+    for (var n = 0; n < WIDTH+HEIGHT; n++) {
+      context.fillStyle = BG_COLORS[n % BG_COLORS.length];
+      context.beginPath();
+      context.moveTo(0, n * PXL_SIZE);
+      context.lineTo(n * PXL_SIZE, 0);
+      context.lineTo((n+1) * PXL_SIZE+1, 0);
+      context.lineTo(0, (n+1) * PXL_SIZE+1);
+      context.fill();
+    }
+
+    background_img = context.getImageData(0, 0, canvas.width, canvas.height);
+  }
+
+  function draw() {
+    canvas.width += 0;
+    context.putImageData(background_img, 0, 0);
+
+    var diameter = PXL_SIZE * (max_len - len + 1) / (max_len);
+
+    if (len <= 0) diameter = 0;
+    // part of player behind other things
+    if (len >= 1 && attached_to != null) {
+      context.lineWidth = diameter;
+      context.strokeStyle = dead ? BLACK : ORANGE;
+      context.lineCap = 'butt';
+      context.lineJoin = 'round';
+      context.moveTo(px(attached_to), py(attached_to));
+      context.lineTo(px(body[0]), py(body[0]));
+      context.stroke();
+    }
+
+    // everything but the player
+    for (var x = 0; x < WIDTH; x++) {
+      for (var y = 0; y < HEIGHT; y++) {
+        var p = {x:x, y:y};
+        var what = map[x][y];
+        switch(what) {
+          case EMPTY:
+          case null:
+          case undefined:
+            continue;
+          case WALL: draw_box(x, y, GRAY); continue;
+          case CLOUD: draw_box(x, y, BLUE); continue;
+          case PILL:
+            context.beginPath();
+            context.fillStyle = WHITE;
+            context.strokeStyle = WHITE;
+            context.arc(px(p), py(p), PXL_SIZE/6, 0, Math.PI*2, true);
+            context.fill();
+            continue;
+
+          default:
+            if (what >= BAD_LO && what <= BAD_HI) {
+              //draw_box(x, y, GREEN);
+              halfish=PXL_SIZE/2;
+              midx = px(p); midy = py(p);
+              leftx = midx-halfish; topy    = midy-halfish;
+              rightx= midx+halfish; bottomy = midy+halfish;
+              // top
+              draw_shape((what & BAD_TOP) ? RED : GREEN, [
+                {x:leftx,  y:topy+1},
+                {x:leftx,  y:topy},
+                {x:rightx, y:topy},
+                {x:rightx, y:topy+1}, 
+                {x:midx,   y:midy+1},
+              ]);
+              // bottom
+              draw_shape((what & BAD_BOTTOM) ? RED : GREEN, [
+                {x:leftx,  y:bottomy-1},
+                {x:leftx,  y:bottomy},
+                {x:rightx, y:bottomy},
+                {x:rightx, y:bottomy-1},
+                {x:midx,   y:midy-1},
+              ]);
+              // right
+              draw_shape((what & BAD_RIGHT) ? RED : GREEN,
+                [{x:rightx,y:topy}, {x:rightx,y:bottomy}, 
+                  {x:midx, y:midy}, {x:midx, y:midy}]);
+              // left
+              draw_shape((what & BAD_LEFT) ? RED : GREEN,
+                [{x:leftx,y:topy}, {x:leftx,y:bottomy},
+                  {x:midx, y:midy}, {x:midx, y:midy}]);
+            }
+        }
+      }
+    }
+
+    // player
+    context.beginPath();
+    context.fillStyle = dead ? BLACK : ORANGE;
+    if (len > 1) {
+      context.lineWidth = diameter;
+      context.strokeStyle = dead ? BLACK : ORANGE;
+      context.lineCap = 'butt';
+      context.lineJoin = 'round';
+      //context.globalAlpha = 0.5;
+      for (i = 0; i < len; i++) {
+        context.lineTo(px(body[i]), py(body[i]));
+        context.lineCap = 'round';
+      }
+      context.stroke();
+    } else {
+      context.arc(px(head), py(head), diameter / 2, 0, Math.PI*2, true);
+      context.fill();
+    }
+    //context.closePath();
+    context.globalApha = 1;
+  }
+
+  function draw_box(x, y, color) {
+    context.fillStyle = color;
+    context.fillRect(x * PXL_SIZE, y * PXL_SIZE, PXL_SIZE, PXL_SIZE);
+  }
+
+  function draw_shape(color, pts) {
+    context.beginPath();
+    context.fillStyle = color;
+    context.strokeStyle = color;
+    context.lineCap = context.lineJoin = 'butt';
+    context.lineWidth = .5;
+    context.moveTo(pts[0].x,pts[0].y);
+    for (var i = 1; i < pts.length; i++) {
+      context.lineTo(pts[i].x,pts[i].y);
+    }
+    context.fill();
+    //context.stroke();
+    context.closePath();
+  }
+
+  function loop() {
+    if (is_key_down(KEY_R))
+      start_level();
+    else if (!dead)
+      move_player();
+    clearKeys();
+    draw();
+    
+    setTimeout(loop, 1000/FPS);
+  }
+
+  function eq(a, b) {
+    return a.x == b.x && a.y == b.y;
+  }
+
+  function move_player() {
+    var fell = do_gravity()
+    if (!fell) do_stretch();
+  }
+
+  function do_gravity() {
+    if (attached_to != null) return false;
+    for (var i = 0; i < len; i++) {
+      var next = {x:body[i].x, y:body[i].y+1};
+      if (!in_bounds(next)) return false;
+      if (!can_fall_into(get(next))) {
+        return false;
+      }
+    }
+    next = {x:head.x, y:head.y+1};
+    collapse_to(next);
+    return true;
+  }
+
+  function do_stretch() {
+    if (is_key_down(KEY_SPACE)) {
+      collapse_to(head);
+    }
+
+    var dx = 0, dy = 0;
+    if (is_key_down(KEY_UP))        dy = -1;
+    else if(is_key_down(KEY_RIGHT)) dx =  1;
+    else if(is_key_down(KEY_DOWN))  dy =  1;
+    else if(is_key_down(KEY_LEFT))  dx = -1;
+    else return;
+
+    var next = {x:head.x+dx,y:head.y+dy};
+    if (!in_bounds(next)) return;
+
+    if (is(next, PLAYER) && len >= 2) {
+      if (eq(next, body[len-2])) {
+        len--;
+        set(head, EMPTY);
+        head = next;
+      }
+      return;
+    }
+    if (!can_move_into(get(next))) return;
+
+    if (len >= max_len || can_attach_from(next)) {
+      collapse_to(next);
+    } else {
+      stretch_to(next);
+    }
+  }
+
+  function die() {
+    dead = true;
+  }
+
+  function can_fall_into(what) {
+    return what == EMPTY || what == PLAYER || what == PILL;
+  }
+
+  function can_move_into(what) {
+    return what == EMPTY || what == CLOUD || what == PILL;
+  }
+
+  function can_attach_from(where) {
+    return !!get_attached(where);
+  }
+
+  function get_attached(from) {
+    var adj_bad = get_adj_bad(from);
+    if (adj_bad) return adj_bad;
+
+    var attachables = [WALL];
+    for (i in attachables) {
+      what = attachables[i];
+      adj = get_adj(from, what);
+      if (adj) return adj;
+    }
+    return null;
+  }
+
+  function in_bounds(where) {
+    if (where.x >= WIDTH)  return false;
+    if (where.y >= HEIGHT) return false;
+    if (where.x < 0)       return false;
+    if (where.y < 0)       return false;
+    return true;
+  }
+
+  function set(where, what) {
+    if (in_bounds(where))
+      map[where.x][where.y] = what;
+  }
+
+  function get(where) {
+    if (in_bounds(where))
+      return map[where.x][where.y];
+    else return EMPTY;
+  }
+
+  function is(where, what) {
+    return get(where) == what;
+  }
+
+  function get_adj(where, what) {
+    if (is({x:where.x+1, y:where.y  }, what))
+    return {x:where.x+1, y:where.y  };
+    if (is({x:where.x-1, y:where.y  }, what))
+    return {x:where.x-1, y:where.y  };
+    if (is({x:where.x  , y:where.y+1}, what)) 
+    return {x:where.x  , y:where.y+1};
+    if (is({x:where.x  , y:where.y-1}, what))
+    return {x:where.x  , y:where.y-1};
+
+    return null;
+  }
+
+  function is_adj(where, what) {
+    return get_adj(where, what) != null;
+  }
+
+  // I have no idea how this function works anymore
+  function get_adj_bad(where) {
+    var junk = [
+      {p:{x:where.x+1, y:where.y}, b:BAD_LEFT},
+      {p:{x:where.x-1, y:where.y}, b:BAD_RIGHT},
+      {p:{x:where.x, y:where.y+1}, b:BAD_TOP},
+      {p:{x:where.x, y:where.y-1}, b:BAD_BOTTOM}
+    ];
+
+    for (var i = 0; i < junk.length; i++) {
+      var j = junk[i];
+      thing = get(j.p);
+      if ((thing & BAD_LO) && (thing & j.b))
+        return j.p;
+    }
+
+    return null;
+  }
+
+  function is_adj_bad(where) {
+    return get_adj_bad(where) != null;
+  }
+
+  function clear_body() {
+    for (var i = 0; i < len; i++)
+      set(body[i], EMPTY);
+  }
+
+  function collapse_to(next) {
+    clear_body();
+    len = 0;
+    body = [];
+    stretch_to(next);
+
+    attached_to = get_attached(head);
+  }
+
+  // Doesn't check attaching or max_len
+  // But does check everything else ;)
+  function stretch_to(next) {
+    if (is(next, PILL)) {
+      max_len++;
+    }
+
+    if (is_adj_bad(next)) {
+      die();
+    }
+
+    head = next;
+    body[len++] = head;
+    set(head, PLAYER);
+  }
+
+  function px(where) {
+    return where.x*PXL_SIZE+PXL_SIZE/2;
+  }
+
+  function py(where) {
+    return where.y*PXL_SIZE+PXL_SIZE/2;
+  }
+
+  levels = [];
+  start_game();
+</script>
+</body>
