@@ -20,10 +20,10 @@ document.levels[0] = function() {
 
   map[ 4][23] = PILL;
   map[10][11] = PILL;
-  map[33][20]  = PILL;
+  map[33][20] = PILL;
 
   head.x = 14;
   head.y = 7;
 
   max_len = 1;
-}
+};
